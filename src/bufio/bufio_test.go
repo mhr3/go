@@ -1897,7 +1897,7 @@ func BenchmarkReaderWriteToOptimal(b *testing.B) {
 }
 
 func BenchmarkReaderReadString(b *testing.B) {
-	r := strings.NewReader("       foo       foo        42        42        42        42        42        42        42        42       4.2       4.2       4.2       4.2\n")
+	r := bytes.NewReader([]byte("       foo       foo        42        42        42        42        42        42        42        42       4.2       4.2       4.2       4.2\n"))
 	buf := NewReader(r)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {

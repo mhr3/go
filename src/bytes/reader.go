@@ -35,6 +35,16 @@ func (r *Reader) Len() int {
 // The result is unaffected by any method calls except [Reader.Reset].
 func (r *Reader) Size() int64 { return int64(len(r.s)) }
 
+func (r *Reader) Next(n int) []byte {
+	m := r.Len()
+	if n > m {
+		n = m
+	}
+	data := r.s[r.i : r.i+int64(n)]
+	r.i += int64(n)
+	return data
+}
+
 // Read implements the [io.Reader] interface.
 func (r *Reader) Read(b []byte) (n int, err error) {
 	if r.i >= int64(len(r.s)) {

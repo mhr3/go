@@ -30,9 +30,11 @@ var (
 
 // Reader implements buffering for an io.Reader object.
 type Reader struct {
-	buf          []byte
-	rd           io.Reader // reader provided by the client
-	r, w         int       // buf read and write positions
+	buf        []byte
+	sharedSize int
+	rd         io.Reader // reader provided by the client
+	r, w       int       // buf read and write positions
+
 	err          error
 	lastByte     int // last byte read for UnreadByte; -1 means invalid
 	lastRuneSize int // size of last rune read for UnreadRune; -1 means invalid
@@ -51,7 +53,10 @@ func NewReaderSize(rd io.Reader, size int) *Reader {
 		return b
 	}
 	r := new(Reader)
-	r.reset(make([]byte, max(size, minReadBufferSize)), rd)
+	if r.initForSharedBuf(rd, size) {
+		return r
+	}
+	r.reset(make([]byte, max(size, minReadBufferSize)), rd, -1)
 	return r
 }
 
@@ -75,15 +80,36 @@ func (b *Reader) Reset(r io.Reader) {
 	if b == r {
 		return
 	}
-	if b.buf == nil {
+	if b.initForSharedBuf(r, max(b.sharedSize, cap(b.buf))) {
+		return
+	}
+	if b.buf == nil || b.sharedSize > 0 {
 		b.buf = make([]byte, defaultBufSize)
 	}
-	b.reset(b.buf, r)
+	b.reset(b.buf, r, -1)
 }
 
-func (b *Reader) reset(buf []byte, r io.Reader) {
+func (b *Reader) initForSharedBuf(rd io.Reader, size int) bool {
+	if br, ok := rd.(*bytes.Reader); ok {
+		// Use the []byte from the bytes.Reader directly.
+		// This avoids an allocation and unnecessary copies.
+		size = max(size, minReadBufferSize)
+		buf := br.Next(size)
+		if cap(buf) > size {
+			buf = buf[:len(buf):size]
+		}
+		b.reset(buf, br, size)
+		b.w = len(buf)
+		return true
+	}
+
+	return false
+}
+
+func (b *Reader) reset(buf []byte, r io.Reader, sharedSize int) {
 	*b = Reader{
 		buf:          buf,
+		sharedSize:   sharedSize,
 		rd:           r,
 		lastByte:     -1,
 		lastRuneSize: -1,
@@ -94,6 +120,26 @@ var errNegativeRead = errors.New("bufio: reader returned negative count from Rea
 
 // fill reads a new chunk into the buffer.
 func (b *Reader) fill() {
+	if b.sharedSize > 0 {
+		if br, ok := b.rd.(*bytes.Reader); ok {
+			rewind := int64(b.w - b.r)
+			if rewind > 0 {
+				br.Seek(-rewind, io.SeekCurrent)
+			}
+			b.r = 0
+			buf := br.Next(b.sharedSize)
+			b.w = len(buf)
+			if len(buf) == int(rewind) {
+				b.err = io.EOF
+				return
+			}
+			// this makes sure the code doesn't think our buffer is too small
+			b.buf = buf[:min(cap(buf), b.sharedSize)]
+			return
+		}
+		panic("bufio: unable to refill buffer")
+	}
+
 	// Slide existing data to beginning.
 	if b.r > 0 {
 		copy(b.buf, b.buf[b.r:b.w])
